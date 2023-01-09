@@ -1,7 +1,7 @@
 //! Bindings to winapi's certificate-store related APIs.
 
 use std::cmp;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, c_void};
 use std::fmt;
 use std::io;
 use std::mem;
@@ -243,6 +243,63 @@ impl CertStore {
             Ok(ret)
         }
     }
+
+    /// Determines if a cert exists in a given store
+    pub fn find_existing_cert(&mut self, cert: &CertContext) -> io::Result<CertContext> {
+        unsafe {
+            let res = Cryptography::CertFindCertificateInStore( 
+                self.0,
+                Cryptography::X509_ASN_ENCODING | 
+                Cryptography::PKCS_7_ASN_ENCODING, 
+                0,                             
+                Cryptography::CERT_COMPARE_EXISTING 
+                << Cryptography::CERT_COMPARE_SHIFT, 
+                cert.as_inner() as *const c_void, 
+                ptr::null_mut(), 
+            ); 
+            if res.is_null() { 
+                return Err(io::Error::last_os_error());
+            } else { 
+                Ok(CertContext::from_inner(res))
+            }  
+        } 
+    }
+
+    /// Searches provided store to see if the provided cert exisits.
+    /// If the cert already exists within the cert store, the newly added private key is deleted to get rid of duplicate keys
+    /// If the cert does not exist, the provided cert will be persisted to the store.
+    pub fn find_existing_cert_and_key(cert: &mut CertContext, store: &mut CertStore) -> io::Result<Option<CertContext>> {
+        let mut existing_cert = None; 
+
+        match store.find_existing_cert(cert) {
+            Ok(x) => { 
+                // Check if the certificate has a valid private key 
+                if x 
+                    .private_key() 
+                    .silent(true) 
+                    .compare_key(true) 
+                    .acquire() 
+                    .is_ok() { 
+                        existing_cert = Some(x);
+                }
+            }
+            Err(_) => ()
+        }
+
+        if existing_cert == None { 
+            // Add the new certificate to the persisted store. 
+            match store.add_cert(&cert, CertAdd::Always) { 
+                Err(err) => return Err(err), 
+                _ => () 
+            } 
+        } else {
+            match cert.del_key_container() { 
+                Err(err) => return Err(err), 
+                _ => () 
+            } 
+        } 
+        Ok(existing_cert)
+    }
 }
 
 /// An iterator over the certificates contained in a `CertStore`, returned by
@@ -446,6 +503,23 @@ mod test {
             .encode_and_sign()
             .unwrap();
     }
+
+    #[test]
+    fn find_existing_cert() {
+
+    }
+
+    #[test]
+    fn find_existing_cert_and_key() {
+
+    }
+    // new test
+    // new store
+    // find ( none found )
+    // add cert
+    // find (found)
+
+
 
     #[test]
     fn pfx_import() {
