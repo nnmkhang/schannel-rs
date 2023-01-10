@@ -121,16 +121,28 @@ impl CertContext {
                 let mut prov_handle = Cryptography::NCRYPT_PROV_HANDLE::default();
                 let mut key_handle = Cryptography::HCRYPTPROV_OR_NCRYPT_KEY_HANDLE::default();
                 
-                Cryptography::NCryptOpenStorageProvider(&mut prov_handle, (*key_prov).pwszProvName, 0);
-                Cryptography::NCryptOpenKey(prov_handle, &mut key_handle, (*key_prov).pwszContainerName, 0, 0);
-                
-                // to open local machine flag, need to set: NCRYPT_MACHINE_KEY_FLAG, pass in boolean for if its machine or user store.
+                let ret = Cryptography::NCryptOpenStorageProvider(&mut prov_handle, (*key_prov).pwszProvName, 0);
+                if ret != 0 {
+                    return Err(io::Error::from_raw_os_error(ret));
+                }
 
-                Cryptography::NCryptDeleteKey(key_handle, 0); // only flag avalile is : NCRYPT_SILENT_FLAG, we should set?
-                Cryptography::NCryptFreeObject(prov_handle);
+                let key_flags = (*key_prov).dwFlags & (Cryptography::NCRYPT_MACHINE_KEY_FLAG | Cryptography::NCRYPT_SILENT_FLAG);
+
+                let ret = Cryptography::NCryptOpenKey(prov_handle, &mut key_handle, (*key_prov).pwszContainerName, 0, key_flags);
+                if ret != 0 {
+                    return Err(io::Error::from_raw_os_error(ret));
+                }
+
+                let key_flags = (*key_prov).dwFlags & Cryptography::NCRYPT_SILENT_FLAG;
+
+                let ret = Cryptography::NCryptDeleteKey(key_handle, key_flags); 
+                if ret != 0 {
+                    return Err(io::Error::from_raw_os_error(ret));
+                }
 
             }else{
                 // CAPI Key
+                let key_flags = (*key_prov).dwFlags & (Cryptography::CRYPT_SILENT | Cryptography::CRYPT_MACHINE_KEYSET);
 
                 let mut prov_handle = Cryptography::HCRYPTPROV_LEGACY::default();
                 let ok = Cryptography::CryptAcquireContextW(
@@ -138,7 +150,7 @@ impl CertContext {
                     (*key_prov).pwszContainerName,
                     (*key_prov).pwszProvName,
                     (*key_prov).dwProvType, 
-                    Cryptography::CRYPT_DELETEKEYSET);
+                    key_flags | Cryptography::CRYPT_DELETEKEYSET);
 
                 if ok == 0 {
                     return Err(io::Error::last_os_error());
@@ -779,10 +791,5 @@ mod test {
             ]
         );
         assert_eq!(hash, pem.fingerprint(HashAlgorithm::sha256()).unwrap());
-    }
-
-    #[test]
-    fn delete_key() {
-
     }
 }

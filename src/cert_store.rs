@@ -249,11 +249,9 @@ impl CertStore {
         unsafe {
             let res = Cryptography::CertFindCertificateInStore( 
                 self.0,
-                Cryptography::X509_ASN_ENCODING | 
-                Cryptography::PKCS_7_ASN_ENCODING, 
+                Cryptography::X509_ASN_ENCODING | Cryptography::PKCS_7_ASN_ENCODING,
                 0,                             
-                Cryptography::CERT_COMPARE_EXISTING 
-                << Cryptography::CERT_COMPARE_SHIFT, 
+                Cryptography::CERT_COMPARE_EXISTING << Cryptography::CERT_COMPARE_SHIFT,
                 cert.as_inner() as *const c_void, 
                 ptr::null_mut(), 
             ); 
@@ -505,12 +503,9 @@ mod test {
     }
 
     #[test]
-    fn find_existing_cert() {
-
-    }
-
-    #[test]
     fn find_existing_cert_and_key() {
+        // let mut store = CertStore::open_current_user("RustMy").unwrap();
+        // let existing_cert = CertStore::find_existing_cert_and_key(&mut context, &mut store)?;
 
     }
     // new test
