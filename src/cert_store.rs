@@ -269,10 +269,9 @@ impl CertStore {
     pub fn find_existing_cert_and_key(cert: &mut CertContext, store: &mut CertStore) -> io::Result<Option<CertContext>> {
         let mut existing_cert = None; 
 
-        match store.find_existing_cert(cert) {
-            Ok(x) => { 
-                // Check if the certificate has a valid private key 
-                if x 
+
+        if let Ok(x) = store.find_existing_cert(cert){
+            if x 
                     .private_key() 
                     .silent(true) 
                     .compare_key(true) 
@@ -280,22 +279,20 @@ impl CertStore {
                     .is_ok() { 
                         existing_cert = Some(x);
                 }
-            }
-            Err(_) => ()
         }
+        
 
-        if existing_cert == None { 
-            // Add the new certificate to the persisted store. 
-            match store.add_cert(&cert, CertAdd::Always) { 
-                Err(err) => return Err(err), 
-                _ => () 
-            } 
+        if existing_cert == None {
+            if let Err(err) = store.add_cert(&cert, CertAdd::Always)
+            {
+                return Err(err);
+            }
         } else {
-            match cert.del_key_container() { 
-                Err(err) => return Err(err), 
-                _ => () 
-            } 
-        } 
+            if let Err(err) = cert.del_key_container(){
+                return Err(err);
+            }
+        }
+        
         Ok(existing_cert)
     }
 }
