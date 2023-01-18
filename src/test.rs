@@ -719,7 +719,7 @@ fn accept_one_byte_at_a_time() {
 }
 
 #[test]
-fn split_cert_key() { // leaking key
+fn split_cert_key() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let t = thread::spawn(move || {
@@ -764,10 +764,13 @@ fn split_cert_key() { // leaking key
         .key_spec(KeySpec::key_exchange())
         .set()
         .unwrap();
-    // let mut new_cert = cert;
+
+    // handle used to delete the persisted key
+    let mut new_cert = cert.clone(); 
+
     let stream = listener.accept().unwrap().0;
     let creds = SchannelCred::builder()
-        .cert(cert) // moved into builder, can't access after this.
+        .cert(cert)
         .acquire(Direction::Inbound)
         .unwrap();
     let mut stream = tls_stream::Builder::new().accept(creds, stream).unwrap();
@@ -779,9 +782,7 @@ fn split_cert_key() { // leaking key
 
     t.join().unwrap();
 
-    // if let Err(_err) = cert.del_key_container() {
-    //     panic!();
-    // }
+    new_cert.del_key_container().unwrap();
 }
 
 #[test]

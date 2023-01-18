@@ -244,15 +244,15 @@ impl CertStore {
         }
     }
 
-    /// Determines if a cert exists in a given store
-    pub fn find_existing_cert(&mut self, cert: &CertContext) -> io::Result<CertContext> {
+    /// Determines if the provided cert exists in a given store
+    pub fn find_existing_cert(&mut self, provided_cert: &CertContext) -> io::Result<CertContext> {
         unsafe {
             let res = Cryptography::CertFindCertificateInStore( 
                 self.0,
                 Cryptography::X509_ASN_ENCODING | Cryptography::PKCS_7_ASN_ENCODING,
                 0,                             
                 Cryptography::CERT_COMPARE_EXISTING << Cryptography::CERT_COMPARE_SHIFT,
-                cert.as_inner() as *const c_void, 
+                provided_cert.as_inner() as *const c_void, 
                 ptr::null_mut(), 
             ); 
             if res.is_null() { 
@@ -263,14 +263,13 @@ impl CertStore {
         } 
     }
 
-    /// Searches provided store to see if the provided cert exisits.
-    /// If the cert already exists within the cert store, the newly added private key is deleted to get rid of duplicate keys
-    /// If the cert does not exist, the provided cert will be persisted to the store.
-    pub fn find_existing_cert_and_key(cert: &mut CertContext, store: &mut CertStore) -> io::Result<Option<CertContext>> {
+    /// Searches the provided store to see if the provided cert exists.
+    /// If the provided cert already exists within the cert store, the newly persisted key that matches the provided cert will be deleted
+    /// If the provided cert does not exist within the store, the provided cert will be persisted to the store
+    pub fn find_existing_cert_and_key(provided_cert: &mut CertContext, store: &mut CertStore) -> io::Result<Option<CertContext>> {
         let mut existing_cert = None; 
 
-
-        if let Ok(x) = store.find_existing_cert(cert){
+        if let Ok(x) = store.find_existing_cert(provided_cert) {
             if x 
                     .private_key() 
                     .silent(true) 
@@ -282,12 +281,12 @@ impl CertStore {
         }
         
         if existing_cert == None {
-            if let Err(err) = store.add_cert(&cert, CertAdd::Always)
+            if let Err(err) = store.add_cert(&provided_cert, CertAdd::Always)
             {
                 return Err(err);
             }
         } else {
-            if let Err(err) = cert.del_key_container() {
+            if let Err(err) = provided_cert.del_key_container() {
                 return Err(err);
             }
         }
@@ -499,16 +498,19 @@ mod test {
     }
 
     fn find_existing_cert_and_key_helper(pfx: &[u8], pass: &str) { 
+        // doing two iterations to ensure that a PfxImport call does not leak a key when the same cert is already in a store
         for _ in 0..2 {
-            let mut identity = None;
 
-            let store = PfxImportOptions::new()
+            // import provided pfx file to the memory store, key will be persisted since Cryptography::NO_PERSIST_KEY is not set
+            let memory_store = PfxImportOptions::new()
                 .include_extended_properties(true)
                 .password(pass)
                 .import(pfx)
                 .unwrap();
-
-            for cert in store.certs() {
+            
+            // set identity to the cert that matches the key inside the pfx file
+            let mut identity = None;
+            for cert in memory_store.certs() {
                 if cert
                     .private_key()
                     .silent(true)
@@ -520,66 +522,67 @@ mod test {
                     break;
                 }
             }
+            let mut identity = identity.unwrap();
 
-            let mut identity = match identity {
-                Some(identity) => identity,
-                None => {
-                    panic!()
-                }
-            };
-
+            // open temporary "TestRustMy" store for current user and add identity if it is not already in the store
             let mut store = CertStore::open_current_user("TestRustMy").unwrap();
-            if let Err(_err) = CertStore::find_existing_cert(&mut store, &identity) {
-                if let Err(_err) = store.add_cert(&identity, CertAdd::Always){
-                    panic!()
-                }
+            if CertStore::find_existing_cert(&mut store, &identity).is_err() {
+                store.add_cert(&identity, CertAdd::Always).unwrap();
                 continue;
             }
 
+            // the following code will only be executed on second iteration
             let existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut store).unwrap();
 
-            let mut exisiting_cert = match existing_cert {
-                Some(exisiting_cert) => exisiting_cert,
-                None => {
-                    panic!()
-                }
-            };
-
+            // get handle to current cert inside of "TestRustMy" store
+            let mut exisiting_cert = existing_cert.unwrap();
+            
+            // check key that matches the overwritten cert is deleted
             assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
             
-            // Clean up leaked keys
-            if let Err(_err) = exisiting_cert.del_key_container() {
-                panic!();
-            }
-            
-            if let Err(_err) = exisiting_cert.delete() {
-                panic!();
-            }
+            // clean up keys, certs and store
+            exisiting_cert.del_key_container().unwrap();
+            exisiting_cert.delete().unwrap();
+            assert_eq!(store.certs().count(), 0);
+            delete_current_user_store("TestRustMy");
+        }
+    }
 
-            let mut count = 0;
-
-            for _cert in store.certs() {
-                count += 1;
+    fn delete_current_user_store(which: &str) -> () {
+        unsafe {
+            let data = OsStr::new(which)
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let _store = Cryptography::CertOpenStore(
+                Cryptography::CERT_STORE_PROV_SYSTEM_W,
+                Cryptography::CERT_QUERY_ENCODING_TYPE::default(),
+                Cryptography::HCRYPTPROV_LEGACY::default(),
+                Cryptography::CERT_SYSTEM_STORE_CURRENT_USER_ID
+                    << Cryptography::CERT_SYSTEM_STORE_LOCATION_SHIFT | Cryptography::CERT_STORE_DELETE_FLAG,
+                data.as_ptr() as *mut _,
+            );
+            if io::Error::last_os_error().raw_os_error() != Some(0) {
+                panic!("cert store not deleted");
             }
-            assert_eq!(count, 0);
         }
     }
 
     #[test]
     fn find_existing_cert_and_key_test() {
-        // This test case will cover find_exisiting_cert_and_key, find_exisiting_cert, and del_key_container.
+        // this test case will cover find_exisiting_cert_and_key, find_exisiting_cert, and del_key_container.
 
-        // Test CAPI Key deletion
+        // test CAPI key deletion
         let pfx = include_bytes!("../test/identity.p12");
         find_existing_cert_and_key_helper(pfx, "mypass");
 
-        // Test CNG Key deletion
+        // test CNG key deletion
         let pfx = include_bytes!("../test/eccplayclient.pfx");
         find_existing_cert_and_key_helper(pfx, "openssl"); 
     }
 
     #[test]
-    fn pfx_import() { // fix key leakage
+    fn pfx_import() {
         let mut identity = None;
         let pfx = include_bytes!("../test/identity.p12");
         let store = PfxImportOptions::new()
@@ -600,7 +603,7 @@ mod test {
             .count();
         assert_eq!(pkeys, 1);
 
-        // Delete the leaked key
+        // find and delete the leaked key
         for cert in store.certs() {
             if cert
                 .private_key()
@@ -614,16 +617,8 @@ mod test {
             }
         }
 
-        let mut identity = match identity {
-            Some(identity) => identity,
-            None => {
-                panic!()
-            }
-        };
-
-        if let Err(_err) = identity.del_key_container() {
-            panic!();
-        }
+        let mut identity = identity.unwrap();
+        identity.del_key_container().unwrap();
 
         assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
     }
