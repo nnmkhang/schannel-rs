@@ -532,17 +532,14 @@ mod test {
             }
 
             // the following code will only be executed on second iteration
-            let existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut store).unwrap();
+            let mut existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut store).unwrap().unwrap();
 
-            // get handle to current cert inside of "TestRustMy" store
-            let mut exisiting_cert = existing_cert.unwrap();
-            
             // check key that matches the overwritten cert is deleted
             assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
             
             // clean up keys, certs and store
-            exisiting_cert.del_key_container().unwrap();
-            exisiting_cert.delete().unwrap();
+            existing_cert.del_key_container().unwrap();
+            existing_cert.delete().unwrap();
             assert_eq!(store.certs().count(), 0);
             delete_current_user_store("TestRustMy");
         }
