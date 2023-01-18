@@ -107,6 +107,55 @@ impl CertContext {
         self.get_encoded_bytes()
     }
 
+    /// Deletes the key container for both CAPI and CNG keys
+    pub fn del_key_container(&mut self) -> io::Result<()>{
+        unsafe {
+
+            // get CERT_KEY_PROV_INFO_PROP_ID and cast to key_prov
+            let bytes = self.get_bytes(Cryptography::CERT_KEY_PROV_INFO_PROP_ID)?;
+            assert!(bytes.len() <= u32::max_value() as usize);
+            let key_prov = bytes.as_ptr() as *const Cryptography::CRYPT_KEY_PROV_INFO;
+            
+            if (*key_prov).dwKeySpec == 0 { // CNG Key
+                let mut prov_handle = Cryptography::NCRYPT_PROV_HANDLE::default();
+                let mut key_handle = Cryptography::HCRYPTPROV_OR_NCRYPT_KEY_HANDLE::default();
+                
+                let ret = Cryptography::NCryptOpenStorageProvider(&mut prov_handle, (*key_prov).pwszProvName, 0);
+                if ret != 0 {
+                    return Err(io::Error::from_raw_os_error(ret));
+                }
+
+                let key_flags = (*key_prov).dwFlags & (Cryptography::NCRYPT_MACHINE_KEY_FLAG | Cryptography::NCRYPT_SILENT_FLAG);
+
+                let ret = Cryptography::NCryptOpenKey(prov_handle, &mut key_handle, (*key_prov).pwszContainerName, 0, key_flags);
+                if ret != 0 {
+                    return Err(io::Error::from_raw_os_error(ret));
+                }
+
+                let key_flags = (*key_prov).dwFlags & Cryptography::NCRYPT_SILENT_FLAG;
+
+                let ret = Cryptography::NCryptDeleteKey(key_handle, key_flags); 
+                if ret != 0 {
+                    return Err(io::Error::from_raw_os_error(ret));
+                }
+            }else{ // CAPI Key
+                let key_flags = (*key_prov).dwFlags & (Cryptography::CRYPT_SILENT | Cryptography::CRYPT_MACHINE_KEYSET);
+                let mut prov_handle = Cryptography::HCRYPTPROV_LEGACY::default();
+
+                let ok = Cryptography::CryptAcquireContextW(
+                    &mut prov_handle,
+                    (*key_prov).pwszContainerName,
+                    (*key_prov).pwszProvName,
+                    (*key_prov).dwProvType, 
+                    key_flags | Cryptography::CRYPT_DELETEKEYSET);
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            return Ok(());
+        }
+    }
+
     /// Certificate subject public key info
     pub fn subject_public_key_info_der(&self) -> io::Result<Vec<u8>> {
         unsafe {

@@ -765,6 +765,9 @@ fn split_cert_key() {
         .set()
         .unwrap();
 
+    // handle used to delete the persisted key
+    let mut new_cert = cert.clone(); 
+
     let stream = listener.accept().unwrap().0;
     let creds = SchannelCred::builder()
         .cert(cert)
@@ -778,6 +781,8 @@ fn split_cert_key() {
     assert_eq!(stream.read(&mut buf).unwrap(), 0);
 
     t.join().unwrap();
+
+    new_cert.del_key_container().unwrap();
 }
 
 #[test]
