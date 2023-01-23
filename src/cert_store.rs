@@ -260,39 +260,9 @@ impl CertStore {
             } else { 
                 Ok(CertContext::from_inner(res))
             }  
-        } 
+        }   
     }
 
-    /// Searches the provided store to see if the provided cert exists.
-    /// If the provided cert already exists within the cert store, the newly persisted key that matches the provided cert will be deleted
-    /// If the provided cert does not exist within the store, the provided cert will be persisted to the store
-    pub fn find_existing_cert_and_key(provided_cert: &mut CertContext, store: &mut CertStore) -> io::Result<Option<CertContext>> {
-        let mut existing_cert = None; 
-
-        if let Ok(x) = store.find_existing_cert(provided_cert) {
-            if x 
-                    .private_key() 
-                    .silent(true) 
-                    .compare_key(true) 
-                    .acquire() 
-                    .is_ok() { 
-                        existing_cert = Some(x);
-                }
-        }
-        
-        if existing_cert == None {
-            if let Err(err) = store.add_cert(&provided_cert, CertAdd::Always)
-            {
-                return Err(err);
-            }
-        } else {
-            if let Err(err) = provided_cert.del_key_container() {
-                return Err(err);
-            }
-        }
-
-        Ok(existing_cert)
-    }
 }
 
 /// An iterator over the certificates contained in a `CertStore`, returned by
@@ -497,52 +467,45 @@ mod test {
             .unwrap();
     }
 
-    fn find_existing_cert_and_key_helper(pfx: &[u8], pass: &str) { 
-        // doing two iterations to ensure that a PfxImport call does not leak a key when the same cert is already in a store
-        for _ in 0..2 {
-
-            // import provided pfx file to the memory store, key will be persisted since Cryptography::NO_PERSIST_KEY is not set
-            let memory_store = PfxImportOptions::new()
-                .include_extended_properties(true)
-                .password(pass)
-                .import(pfx)
-                .unwrap();
-            
-            // set identity to the cert that matches the key inside the pfx file
-            let mut identity = None;
-            for cert in memory_store.certs() {
-                if cert
-                    .private_key()
-                    .silent(true)
-                    .compare_key(true)
-                    .acquire()
-                    .is_ok()
-                {
-                    identity = Some(cert);
-                    break;
-                }
+    fn find_existing_cert_helper(pfx: &[u8], pass: &str) { 
+        // import provided pfx file to the memory store, key will be persisted since Cryptography::NO_PERSIST_KEY is not set
+        let memory_store = PfxImportOptions::new()
+            .include_extended_properties(true)
+            .password(pass)
+            .import(pfx)
+            .unwrap();
+        
+        // set identity to the cert that matches the key inside the pfx file
+        let mut identity = None;
+        for cert in memory_store.certs() {
+            if cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok()
+            {
+                identity = Some(cert);
+                break;
             }
-            let mut identity = identity.unwrap();
-
-            // open temporary "TestRustMy" store for current user and add identity if it is not already in the store
-            let mut store = CertStore::open_current_user("TestRustMy").unwrap();
-            if CertStore::find_existing_cert(&mut store, &identity).is_err() {
-                store.add_cert(&identity, CertAdd::Always).unwrap();
-                continue;
-            }
-
-            // the following code will only be executed on second iteration
-            let mut existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut store).unwrap().unwrap();
-
-            // check key that matches the overwritten cert is deleted
-            assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
-            
-            // clean up keys, certs and store
-            existing_cert.del_key_container().unwrap();
-            existing_cert.delete().unwrap();
-            assert_eq!(store.certs().count(), 0);
-            delete_current_user_store("TestRustMy");
         }
+        let mut identity = identity.unwrap();
+
+        // open temporary "TestRustMy" store for current user and add identity if it is not already in the store
+        let mut store = CertStore::open_current_user("TestRustMy").unwrap();
+        store.add_cert(&identity, CertAdd::Always).unwrap();
+
+        let result = CertStore::find_existing_cert(&mut store, &identity).unwrap();
+
+        assert_eq!(result, identity);
+
+        // clean up keys, certs and store
+        identity.del_key_container().unwrap();
+        assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
+        result.delete().unwrap(); // have to use result because it identity is in the memory store
+        assert_eq!(store.certs().count(), 0);
+        delete_current_user_store("TestRustMy");
+
     }
 
     fn delete_current_user_store(which: &str) -> () {
@@ -566,16 +529,16 @@ mod test {
     }
 
     #[test]
-    fn find_existing_cert_and_key_test() {
+    fn find_existing_cert_test() {
         // this test case will cover find_exisiting_cert_and_key, find_exisiting_cert, and del_key_container.
 
         // test CAPI key deletion
         let pfx = include_bytes!("../test/identity.p12");
-        find_existing_cert_and_key_helper(pfx, "mypass");
+        find_existing_cert_helper(pfx, "mypass");
 
         // test CNG key deletion
         let pfx = include_bytes!("../test/eccplayclient.pfx");
-        find_existing_cert_and_key_helper(pfx, "openssl"); 
+        find_existing_cert_helper(pfx, "openssl"); 
     }
 
     #[test]
