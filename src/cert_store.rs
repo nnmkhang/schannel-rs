@@ -502,12 +502,13 @@ mod test {
         // clean up keys, certs and store
         identity.del_key_container().unwrap();
         assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
-        result.delete().unwrap(); // have to use result because it identity is in the memory store
+        result.delete().unwrap(); // have to use result cert since its the cert thats in the actual 
         assert_eq!(store.certs().count(), 0);
         delete_current_user_store("TestRustMy");
 
     }
 
+    // keeping a private function since deleting a store is not natural.
     fn delete_current_user_store(which: &str) -> () {
         unsafe {
             let data = OsStr::new(which)
@@ -530,7 +531,7 @@ mod test {
 
     #[test]
     fn find_existing_cert_test() {
-        // this test case will cover find_exisiting_cert_and_key, find_exisiting_cert, and del_key_container.
+        // this test case will cover find_exisiting_cert and del_key_container
 
         // test CAPI key deletion
         let pfx = include_bytes!("../test/identity.p12");
