@@ -97,6 +97,27 @@ pub enum CertAdd {
     UseExisting = Cryptography::CERT_STORE_ADD_USE_EXISTING as isize,
 }
 
+
+///
+
+#[derive(Debug)]
+pub enum DeleteCertError {
+    ///
+    NoPrivateKey,
+    ///
+    DeleteKeyContainerError,
+    ///
+    DeleteCertError,
+    ///
+    IoError(io::Error)
+}
+
+impl From<io::Error> for DeleteCertError {
+    fn from(error: io::Error) -> Self {
+        DeleteCertError::IoError(error)
+    }
+}
+
 impl CertStore {
     /// Opens up the specified key store within the context of the current user.
     ///
@@ -147,6 +168,42 @@ impl CertStore {
             } else {
                 Err(io::Error::last_os_error())
             }
+        }
+    }
+
+     /// keeping a private function since deleting a store is not natural.
+    pub fn delete_current_user_store(which: &str) -> () {
+        unsafe {
+            let data = OsStr::new(which)
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let _store = Cryptography::CertOpenStore(
+                Cryptography::CERT_STORE_PROV_SYSTEM_W,
+                Cryptography::CERT_QUERY_ENCODING_TYPE::default(),
+                Cryptography::HCRYPTPROV_LEGACY::default(),
+                Cryptography::CERT_SYSTEM_STORE_CURRENT_USER_ID
+                    << Cryptography::CERT_SYSTEM_STORE_LOCATION_SHIFT | Cryptography::CERT_STORE_DELETE_FLAG,
+                data.as_ptr() as *mut _,
+            );
+            if io::Error::last_os_error().raw_os_error() != Some(0) {
+                panic!("There was an error deleting the CertStore");
+            }
+        }
+    }
+
+    /// Deletes a cert as well as its coresponding private key. Will return an error if the provided cert does not have a private key
+    pub fn delete_cert_and_key(mut cert_context: CertContext) -> Result<(), DeleteCertError> {
+        if cert_context.private_key().silent(true).compare_key(true).acquire().is_ok() {
+            if let Err(_err) = cert_context.del_key_container() {
+                return Err(DeleteCertError::DeleteKeyContainerError);
+            }
+            if let Err(_err) = cert_context.delete() {
+                return Err(DeleteCertError::DeleteCertError);
+            }
+            Ok(())
+        } else {
+            return Err(DeleteCertError::NoPrivateKey);
         }
     }
 
@@ -489,7 +546,7 @@ mod test {
                 break;
             }
         }
-        let mut identity = identity.unwrap();
+        let identity = identity.unwrap();
 
         // open temporary "TestRustMy" store for current user and add identity if it is not already in the store
         let mut store = CertStore::open_current_user("TestRustMy").unwrap();
@@ -500,34 +557,15 @@ mod test {
         assert_eq!(result, identity);
 
         // clean up keys, certs and store
-        identity.del_key_container().unwrap();
-        assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
-        result.delete().unwrap(); // have to use result cert since its the cert thats in the actual 
+        // identity.del_key_container().unwrap();
+        CertStore::delete_cert_and_key(identity).unwrap();
+        // assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
+        result.delete().unwrap(); // have to use result cert since its the cert thats in the actual store 
         assert_eq!(store.certs().count(), 0);
-        delete_current_user_store("TestRustMy");
+        CertStore::delete_current_user_store("TestRustMy");
 
     }
 
-    // keeping a private function since deleting a store is not natural.
-    fn delete_current_user_store(which: &str) -> () {
-        unsafe {
-            let data = OsStr::new(which)
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>();
-            let _store = Cryptography::CertOpenStore(
-                Cryptography::CERT_STORE_PROV_SYSTEM_W,
-                Cryptography::CERT_QUERY_ENCODING_TYPE::default(),
-                Cryptography::HCRYPTPROV_LEGACY::default(),
-                Cryptography::CERT_SYSTEM_STORE_CURRENT_USER_ID
-                    << Cryptography::CERT_SYSTEM_STORE_LOCATION_SHIFT | Cryptography::CERT_STORE_DELETE_FLAG,
-                data.as_ptr() as *mut _,
-            );
-            if io::Error::last_os_error().raw_os_error() != Some(0) {
-                panic!("cert store not deleted");
-            }
-        }
-    }
 
     #[test]
     fn find_existing_cert_test() {
