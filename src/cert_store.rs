@@ -7,6 +7,7 @@ use std::io;
 use std::mem;
 use std::os::windows::prelude::*;
 use std::ptr;
+use std::path::Path;
 
 use windows_sys::Win32::Security::Cryptography;
 
@@ -99,22 +100,21 @@ pub enum CertAdd {
 
 
 ///
-
 #[derive(Debug)]
-pub enum DeleteCertError {
-    ///
+pub enum DeleteCertAndKeyError {
+    /// Indicates that there is no private key associated with the provided cert
     NoPrivateKey,
-    ///
+    /// Indicates that there was an error deleting the private key container
     DeleteKeyContainerError,
-    ///
+    /// Indicates that there was an error deleting the cert 
     DeleteCertError,
-    ///
+    /// Used for handling errors coming from delete() or del_key_container() functions
     IoError(io::Error)
 }
 
-impl From<io::Error> for DeleteCertError {
+impl From<io::Error> for DeleteCertAndKeyError {
     fn from(error: io::Error) -> Self {
-        DeleteCertError::IoError(error)
+        DeleteCertAndKeyError::IoError(error)
     }
 }
 
@@ -171,7 +171,9 @@ impl CertStore {
         }
     }
 
-     /// keeping a private function since deleting a store is not natural.
+    /// Deletes a specified store within the context of the current user.
+    /// 
+    /// Deleting stores is not natural and should only be done if necessary
     pub fn delete_current_user_store(which: &str) -> () {
         unsafe {
             let data = OsStr::new(which)
@@ -192,18 +194,20 @@ impl CertStore {
         }
     }
 
-    /// Deletes a cert as well as its coresponding private key. Will return an error if the provided cert does not have a private key
-    pub fn delete_cert_and_key(mut cert_context: CertContext) -> Result<(), DeleteCertError> {
+    /// Deletes a cert as well as the cert's coresponding private key
+    /// 
+    /// This function will return an error if the provided cert does not have a private key
+    pub fn delete_cert_and_key(mut cert_context: CertContext) -> Result<(), DeleteCertAndKeyError> {
         if cert_context.private_key().silent(true).compare_key(true).acquire().is_ok() {
             if let Err(_err) = cert_context.del_key_container() {
-                return Err(DeleteCertError::DeleteKeyContainerError);
+                return Err(DeleteCertAndKeyError::DeleteKeyContainerError);
             }
             if let Err(_err) = cert_context.delete() {
-                return Err(DeleteCertError::DeleteCertError);
+                return Err(DeleteCertAndKeyError::DeleteCertError);
             }
             Ok(())
         } else {
-            return Err(DeleteCertError::NoPrivateKey);
+            return Err(DeleteCertAndKeyError::NoPrivateKey);
         }
     }
 
@@ -302,6 +306,8 @@ impl CertStore {
     }
 
     /// Determines if the provided cert exists in a given store
+    /// 
+    /// If the function is successful a new cert context pointing to the existing cert in the CertStore will be returned
     pub fn find_existing_cert(&mut self, provided_cert: &CertContext) -> io::Result<CertContext> {
         unsafe {
             let res = Cryptography::CertFindCertificateInStore( 
@@ -320,6 +326,58 @@ impl CertStore {
         }   
     }
 
+    /// Opens a .sst file and returns the contents in a CertStore
+    /// 
+    /// The file_name must a valid windows path
+    pub fn open_file(file_name: &Path) -> io::Result<CertStore> { 
+        unsafe { 
+            let data = file_name.as_os_str() 
+                .encode_wide() 
+                .chain(Some(0)) 
+                .collect::<Vec<_>>(); 
+            let store = Cryptography::CertOpenStore( 
+                Cryptography::CERT_STORE_PROV_FILENAME_W, 
+                Cryptography::CERT_QUERY_ENCODING_TYPE::default(), 
+                Cryptography::HCRYPTPROV_LEGACY::default(), 
+                0,        // dwFlags 
+                data.as_ptr() as *mut _, 
+            ); 
+            if !store.is_null() { 
+                Ok(CertStore(store)) 
+            } else { 
+                Err(io::Error::last_os_error()) 
+            } 
+        } 
+    } 
+
+    /// Exports the CertStore provided to a .sst file to the provided location
+    /// 
+    /// The file_path provided must have a .sst as an ending extension, and be a properly formatted windows path
+    pub fn create_sst(file_path: &Path, store:  &mut CertStore) -> io::Result<()> {
+        unsafe{
+            // convert store and file path to c_void pointers
+            let store_ptr = store.0 as *mut CertStore as *mut c_void;
+            let data = file_path.as_os_str() 
+                .encode_wide() 
+                .chain(Some(0)) 
+                .collect::<Vec<_>>();
+            let path_ptr = data.as_ptr() as *mut c_void;
+
+            let res = Cryptography::CertSaveStore(
+                store_ptr, 
+                Cryptography::X509_ASN_ENCODING | Cryptography::PKCS_7_ASN_ENCODING,
+                Cryptography::CERT_STORE_SAVE_AS_STORE,
+                Cryptography::CERT_STORE_SAVE_TO_FILENAME,
+                path_ptr,
+                0
+            );
+            if res == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }            
+        }
+    }
 }
 
 /// An iterator over the certificates contained in a `CertStore`, returned by
@@ -557,13 +615,10 @@ mod test {
         assert_eq!(result, identity);
 
         // clean up keys, certs and store
-        // identity.del_key_container().unwrap();
-        CertStore::delete_cert_and_key(identity).unwrap();
-        // assert_eq!(identity.private_key().silent(true).compare_key(true).acquire().is_err(), true);
-        result.delete().unwrap(); // have to use result cert since its the cert thats in the actual store 
+        CertStore::delete_cert_and_key(identity).unwrap(); // delete cert and associated private key
+        result.delete().unwrap();
         assert_eq!(store.certs().count(), 0);
-        CertStore::delete_current_user_store("TestRustMy");
-
+        CertStore::delete_current_user_store("TestRustMy"); 
     }
 
 

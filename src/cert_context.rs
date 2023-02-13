@@ -107,10 +107,9 @@ impl CertContext {
         self.get_encoded_bytes()
     }
 
-    /// Deletes the key container for both CAPI and CNG keys
+    /// Deletes the cert's associated key container for both CAPI and CNG keys
     pub fn del_key_container(&mut self) -> io::Result<()>{
         unsafe {
-
             // get CERT_KEY_PROV_INFO_PROP_ID and cast to key_prov
             let bytes = self.get_bytes(Cryptography::CERT_KEY_PROV_INFO_PROP_ID)?;
             assert!(bytes.len() <= u32::max_value() as usize);
