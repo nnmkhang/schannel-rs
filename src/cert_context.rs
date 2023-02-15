@@ -62,6 +62,20 @@ impl HashAlgorithm {
     }
 }
 
+/// Rust Wrapper for NCRYPT_PROV_HANDLE
+pub struct NcryptProvHandle(Cryptography::NCRYPT_PROV_HANDLE);
+
+impl Drop for NcryptProvHandle {
+    fn drop(&mut self) {
+        unsafe {
+            Cryptography::NCryptFreeObject(self.0);
+        }
+    }
+    
+}
+
+inner!(NcryptProvHandle, Cryptography::NCRYPT_PROV_HANDLE);
+
 /// Wrapper of a winapi certificate, or a `PCCERT_CONTEXT`.
 #[derive(Debug)]
 pub struct CertContext(*const Cryptography::CERT_CONTEXT);
@@ -108,7 +122,7 @@ impl CertContext {
     }
 
     /// Deletes the cert's associated key container for both CAPI and CNG keys
-    pub fn del_key_container(&mut self) -> io::Result<()>{
+    pub fn delete_key_container(&mut self) -> io::Result<()> {
         unsafe {
             // get CERT_KEY_PROV_INFO_PROP_ID and cast to key_prov
             let bytes = self.get_bytes(Cryptography::CERT_KEY_PROV_INFO_PROP_ID)?;
@@ -117,27 +131,29 @@ impl CertContext {
             
             if (*key_prov).dwKeySpec == 0 { // CNG Key
                 let mut prov_handle = Cryptography::NCRYPT_PROV_HANDLE::default();
+                let ncrypt_prov:NcryptProvHandle;
                 let mut key_handle = Cryptography::HCRYPTPROV_OR_NCRYPT_KEY_HANDLE::default();
                 
                 let ret = Cryptography::NCryptOpenStorageProvider(&mut prov_handle, (*key_prov).pwszProvName, 0);
-                if ret != 0 {
+                if ret == 0 {
+                    ncrypt_prov = NcryptProvHandle::from_inner(prov_handle);
+                } else {
                     return Err(io::Error::from_raw_os_error(ret));
                 }
 
                 let key_flags = (*key_prov).dwFlags & (Cryptography::NCRYPT_MACHINE_KEY_FLAG | Cryptography::NCRYPT_SILENT_FLAG);
 
-                let ret = Cryptography::NCryptOpenKey(prov_handle, &mut key_handle, (*key_prov).pwszContainerName, 0, key_flags);
+                let ret = Cryptography::NCryptOpenKey(ncrypt_prov.as_inner(), &mut key_handle, (*key_prov).pwszContainerName, 0, key_flags);
                 if ret != 0 {
                     return Err(io::Error::from_raw_os_error(ret));
                 }
 
                 let key_flags = (*key_prov).dwFlags & Cryptography::NCRYPT_SILENT_FLAG;
-
                 let ret = Cryptography::NCryptDeleteKey(key_handle, key_flags); 
                 if ret != 0 {
                     return Err(io::Error::from_raw_os_error(ret));
                 }
-            }else{ // CAPI Key
+            } else { // CAPI Key
                 let key_flags = (*key_prov).dwFlags & (Cryptography::CRYPT_SILENT | Cryptography::CRYPT_MACHINE_KEYSET);
                 let mut prov_handle = Cryptography::HCRYPTPROV_LEGACY::default();
 
@@ -266,6 +282,16 @@ impl CertContext {
     /// Returns a hash of this certificate
     pub fn fingerprint(&self, alg: HashAlgorithm) -> io::Result<Vec<u8>> {
         unsafe {
+            let prop = match alg.0 {
+                y if y == HashAlgorithm::sha1().0 => Cryptography::CERT_SHA1_HASH_PROP_ID,
+                y if y == HashAlgorithm::sha256().0 => Cryptography::CERT_SHA256_HASH_PROP_ID,
+                _ => 0
+            };
+
+            if prop != 0 { 
+                return self.get_bytes(prop); 
+            } 
+
             let mut buf = vec![0u8; alg.1];
             let mut len = buf.len() as u32;
 

@@ -782,7 +782,7 @@ fn split_cert_key() {
 
     t.join().unwrap();
 
-    new_cert.del_key_container().unwrap();
+    new_cert.delete_key_container().unwrap();
 }
 
 #[test]
