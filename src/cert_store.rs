@@ -582,7 +582,7 @@ mod test {
         assert_eq!(result, identity); // compare encoded bytes via get_encoded_bytes
 
         // clean up keys, certs and store
-        CertContext::delete_cert_and_key(identity).unwrap(); // delete cert and associated private key from memory store
+        identity.delete_cert_and_key().unwrap(); // delete cert and associated private key from memory store
         result.delete().unwrap(); // delete cert from TestRustMy store
         assert_eq!(store.certs().count(), 0);
         let _res = CertStore::delete_current_user_store("TestRustMy").unwrap(); 
