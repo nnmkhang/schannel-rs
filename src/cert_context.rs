@@ -171,6 +171,19 @@ impl CertContext {
         }
     }
 
+    /// Deletes a cert as well as the cert's coresponding private key
+    /// 
+    /// This function will return an error if the provided cert does not have a private key
+    pub fn delete_cert_and_key(mut cert_context: CertContext) -> io::Result<()> {
+        if cert_context.private_key().silent(true).compare_key(true).acquire().is_ok() {
+            cert_context.delete_key_container()?;
+            cert_context.delete()?;
+            Ok(())
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"Provided cert does not have a corresponding private key").into());
+        }
+    }
+
     /// Certificate subject public key info
     pub fn subject_public_key_info_der(&self) -> io::Result<Vec<u8>> {
         unsafe {

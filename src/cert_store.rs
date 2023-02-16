@@ -179,23 +179,6 @@ impl CertStore {
         }
     }
 
-    /// Deletes a cert as well as the cert's coresponding private key
-    /// 
-    /// This function will return an error if the provided cert does not have a private key
-    pub fn delete_cert_and_key(mut cert_context: CertContext) -> io::Result<()> {
-        if cert_context.private_key().silent(true).compare_key(true).acquire().is_ok() {
-            if let Err(_err) = cert_context.delete_key_container() {
-                return Err(io::Error::last_os_error());
-            }
-            if let Err(_err) = cert_context.delete() {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        } else {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,"Provided cert does not have a corresponding private key").into());
-        }
-    }
-
     /// Imports a PKCS#12-encoded key/certificate pair, returned as a
     /// `CertStore` instance.
     ///
@@ -599,10 +582,10 @@ mod test {
         assert_eq!(result, identity); // compare encoded bytes via get_encoded_bytes
 
         // clean up keys, certs and store
-        CertStore::delete_cert_and_key(identity).unwrap(); // delete cert and associated private key from memory store
+        CertContext::delete_cert_and_key(identity).unwrap(); // delete cert and associated private key from memory store
         result.delete().unwrap(); // delete cert from TestRustMy store
         assert_eq!(store.certs().count(), 0);
-        let _res = CertStore::delete_current_user_store("TestRustMy"); 
+        let _res = CertStore::delete_current_user_store("TestRustMy").unwrap(); 
     }
 
 
