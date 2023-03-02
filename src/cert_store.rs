@@ -1,11 +1,12 @@
 //! Bindings to winapi's certificate-store related APIs.
 
 use std::cmp;
-use std::ffi::OsStr;
+use std::ffi::{c_void, OsStr};
 use std::fmt;
 use std::io;
 use std::mem;
 use std::os::windows::prelude::*;
+use std::path::Path;
 use std::ptr;
 
 use windows_sys::Win32::Security::Cryptography;
@@ -150,6 +151,32 @@ impl CertStore {
         }
     }
 
+    /// Deletes a specified store within the context of the current user.
+    pub fn delete_current_user_store(which: &str) -> io::Result<()> {
+        unsafe {
+            let data = OsStr::new(which)
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+
+            // NULL is always returned when the CERT_STORE_DELETE_FLAG is set
+            Cryptography::CertOpenStore(
+                Cryptography::CERT_STORE_PROV_SYSTEM_W,
+                Cryptography::CERT_QUERY_ENCODING_TYPE::default(),
+                Cryptography::HCRYPTPROV_LEGACY::default(),
+                Cryptography::CERT_SYSTEM_STORE_CURRENT_USER_ID
+                    << Cryptography::CERT_SYSTEM_STORE_LOCATION_SHIFT
+                    | Cryptography::CERT_STORE_DELETE_FLAG,
+                data.as_ptr() as *mut _,
+            );
+            if io::Error::last_os_error().raw_os_error() != Some(0) {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     /// Imports a PKCS#12-encoded key/certificate pair, returned as a
     /// `CertStore` instance.
     ///
@@ -241,6 +268,81 @@ impl CertStore {
             }
             ret.set_len(blob.cbData as usize);
             Ok(ret)
+        }
+    }
+
+    /// Determines if the provided cert exists in a given store
+    ///
+    /// If the function is successful a new cert context pointing to the existing cert in the CertStore will be returned
+    pub fn find_existing_cert(&mut self, provided_cert: &CertContext) -> io::Result<CertContext> {
+        unsafe {
+            let res = Cryptography::CertFindCertificateInStore(
+                self.0,
+                Cryptography::X509_ASN_ENCODING | Cryptography::PKCS_7_ASN_ENCODING,
+                0,
+                Cryptography::CERT_COMPARE_EXISTING << Cryptography::CERT_COMPARE_SHIFT,
+                provided_cert.as_inner() as *const c_void,
+                ptr::null_mut(),
+            );
+            if res.is_null() {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(CertContext::from_inner(res))
+            }
+        }
+    }
+
+    /// Opens a .sst file and returns the contents in a CertStore
+    ///
+    /// The file_name must a valid windows path
+    pub fn open_file(file_name: &Path) -> io::Result<CertStore> {
+        unsafe {
+            let mut data = file_name
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let store = Cryptography::CertOpenStore(
+                Cryptography::CERT_STORE_PROV_FILENAME_W,
+                Cryptography::CERT_QUERY_ENCODING_TYPE::default(),
+                Cryptography::HCRYPTPROV_LEGACY::default(),
+                0, // dwFlags
+                data.as_mut_ptr() as *const c_void,
+            );
+            if !store.is_null() {
+                Ok(CertStore(store))
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+    }
+
+    /// Exports the CertStore provided to a .sst file to the provided location
+    ///
+    /// The file_path provided must have a .sst as an ending extension, and be a properly formatted windows path
+    pub fn create_sst(file_path: &Path, store: &mut CertStore) -> io::Result<()> {
+        unsafe {
+            // convert store and file path to c_void pointers
+            let data = file_path
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let path_ptr = data.as_ptr() as *mut c_void;
+
+            let res = Cryptography::CertSaveStore(
+                store.as_inner(),
+                Cryptography::X509_ASN_ENCODING | Cryptography::PKCS_7_ASN_ENCODING,
+                Cryptography::CERT_STORE_SAVE_AS_STORE,
+                Cryptography::CERT_STORE_SAVE_TO_FILENAME,
+                path_ptr,
+                0,
+            );
+            if res == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
         }
     }
 }
@@ -447,8 +549,61 @@ mod test {
             .unwrap();
     }
 
+    fn find_existing_cert_helper(pfx: &[u8], pass: &str) {
+        // import provided pfx file to the memory store, key will be persisted since Cryptography::NO_PERSIST_KEY is not set
+        let memory_store = PfxImportOptions::new()
+            .include_extended_properties(true)
+            .password(pass)
+            .import(pfx)
+            .unwrap();
+
+        // set identity to the cert that matches the key inside the pfx file
+        let mut identity = None;
+        for cert in memory_store.certs() {
+            if cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok()
+            {
+                identity = Some(cert);
+                break;
+            }
+        }
+        let identity = identity.unwrap();
+
+        // open temporary "TestRustMy" store for current user and add identity if it is not already in the store
+        let mut store = CertStore::open_current_user("TestRustMy").unwrap();
+        store.add_cert(&identity, CertAdd::Always).unwrap();
+
+        let result = CertStore::find_existing_cert(&mut store, &identity).unwrap();
+
+        assert_eq!(result, identity); // compare encoded bytes via get_encoded_bytes
+
+        // clean up keys, certs and store
+        identity.delete_cert_and_key().unwrap(); // delete cert and associated private key from memory store
+        result.delete().unwrap(); // delete cert from TestRustMy store
+        assert_eq!(store.certs().count(), 0);
+        CertStore::delete_current_user_store("TestRustMy").unwrap();
+    }
+
+    #[test]
+    fn find_existing_cert_test() {
+        // this test case will cover find_exisiting_cert and del_key_container
+
+        // test CAPI key deletion
+        let pfx = include_bytes!("../test/identity.p12");
+        find_existing_cert_helper(pfx, "mypass");
+
+        // test CNG key deletion
+        let pfx = include_bytes!("../test/eccplayclient.pfx");
+        find_existing_cert_helper(pfx, "openssl");
+    }
+
     #[test]
     fn pfx_import() {
+        let mut identity = None;
         let pfx = include_bytes!("../test/identity.p12");
         let store = PfxImportOptions::new()
             .include_extended_properties(true)
@@ -467,5 +622,32 @@ mod test {
             })
             .count();
         assert_eq!(pkeys, 1);
+
+        // find and delete the leaked key
+        for cert in store.certs() {
+            if cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok()
+            {
+                identity = Some(cert);
+                break;
+            }
+        }
+
+        let mut identity = identity.unwrap();
+        identity.delete_key_container().unwrap();
+
+        assert_eq!(
+            identity
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_err(),
+            true
+        );
     }
 }
