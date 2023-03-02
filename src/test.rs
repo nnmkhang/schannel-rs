@@ -305,8 +305,8 @@ fn verify_callback_gives_failed_cert() {
         .domain("self-signed.badssl.com")
         .verify_callback(|validation_result| {
             let expected_finger = vec![
-                0xec, 0x4a, 0x07, 0x99, 0xb0, 0x2d, 0xe6, 0x88, 0xdd, 0x27,
-                0xbf, 0x78, 0x53, 0x6b, 0xba, 0xea, 0xc5, 0x5a, 0x12, 0x37,
+                0xec, 0x4a, 0x07, 0x99, 0xb0, 0x2d, 0xe6, 0x88, 0xdd, 0x27, 0xbf, 0x78, 0x53, 0x6b,
+                0xba, 0xea, 0xc5, 0x5a, 0x12, 0x37,
             ];
             assert_eq!(
                 validation_result
@@ -766,7 +766,7 @@ fn split_cert_key() {
         .unwrap();
 
     // handle used to delete the persisted key
-    let mut new_cert = cert.clone(); 
+    let mut new_cert = cert.clone();
 
     let stream = listener.accept().unwrap().0;
     let creds = SchannelCred::builder()
